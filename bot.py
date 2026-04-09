@@ -8,17 +8,25 @@ VALID_STATUS = ["applied", "in progress", "rejected", "selected"]
 
 # ---------------- DB CONNECTION ----------------
 def get_connection():
-    return mysql.connector.connect(
-        host=os.getenv("MYSQLHOST"),
-        user=os.getenv("MYSQLUSER"),
-        password=os.getenv("MYSQLPASSWORD"),
-        database=os.getenv("MYSQLDATABASE"),
-        port=int(os.getenv("MYSQLPORT"))
-    )
+    try:
+        conn = mysql.connector.connect(
+            host=os.getenv("MYSQLHOST"),
+            user=os.getenv("MYSQLUSER"),
+            password=os.getenv("MYSQLPASSWORD"),
+            database=os.getenv("MYSQLDATABASE"),
+            port=int(os.getenv("MYSQLPORT") or 3306)
+        )
+        return conn
+    except Exception as e:
+        print("DB ERROR:", e)
+        return None
 
 # ---------------- CREATE TABLE ----------------
 def create_table():
     conn = get_connection()
+    if conn is None:
+        return
+
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -52,7 +60,7 @@ def parse_message(text):
 # ---------------- ADD JOB ----------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    user = update.message.from_user.username
+    user = update.message.from_user.username or "unknown"
 
     data = parse_message(text)
 
@@ -68,6 +76,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         conn = get_connection()
+        if conn is None:
+            await update.message.reply_text("Database connection failed!")
+            return
+
         cursor = conn.cursor()
 
         cursor.execute("""
@@ -76,7 +88,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """, (user, source, company, role, date, status))
 
         conn.commit()
-
         job_id = cursor.lastrowid
 
         conn.close()
@@ -84,16 +95,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Job saved (ID: {job_id})")
 
     except Exception as e:
+        print("MESSAGE ERROR:", e)
         await update.message.reply_text("Invalid format!")
 
 # ---------------- VIEW ----------------
 async def view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_connection()
-    cursor = conn.cursor()
+    if conn is None:
+        await update.message.reply_text("Database error")
+        return
 
+    cursor = conn.cursor()
     cursor.execute("SELECT id, company, status FROM jobs")
     rows = cursor.fetchall()
-
     conn.close()
 
     if not rows:
@@ -110,11 +124,13 @@ async def view(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------- SUMMARY ----------------
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_connection()
-    cursor = conn.cursor()
+    if conn is None:
+        await update.message.reply_text("Database error")
+        return
 
+    cursor = conn.cursor()
     cursor.execute("SELECT source, status FROM jobs")
     rows = cursor.fetchall()
-
     conn.close()
 
     total = len(rows)
@@ -142,16 +158,27 @@ Rejected: {rejected}
 
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
-    create_table()
+    try:
+        print("Starting bot...")
 
-    app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
+        create_table()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("view", view))
-    app.add_handler(CommandHandler("summary", summary))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        TOKEN = os.getenv("BOT_TOKEN")
 
-    print("Bot started...")
+        if not TOKEN:
+            print("ERROR: BOT_TOKEN missing")
+            exit()
 
-    app.run_polling(close_loop=False)
+        app = ApplicationBuilder().token(TOKEN).build()
 
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("view", view))
+        app.add_handler(CommandHandler("summary", summary))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+        print("Bot started successfully...")
+
+        app.run_polling(close_loop=False)
+
+    except Exception as e:
+        print("FATAL ERROR:", e)

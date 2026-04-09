@@ -1,5 +1,2 @@
-python-telegram-bot
-pandas
-openpyxl
-mysql-connector-python 
 python-telegram-bot==20.3
+mysql-connector-python
