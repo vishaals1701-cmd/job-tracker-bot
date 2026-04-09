@@ -1,58 +1,19 @@
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 import mysql.connector
 import os
 
-# ---------------- VALID STATUS ----------------
-VALID_STATUS = ["applied", "in progress", "rejected", "selected"]
-
-# ---------------- DB CONNECTION ----------------
+# DB CONNECTION
 def get_connection():
-    try:
-        conn = mysql.connector.connect(
-            host=os.getenv("MYSQLHOST"),
-            user=os.getenv("MYSQLUSER"),
-            password=os.getenv("MYSQLPASSWORD"),
-            database=os.getenv("MYSQLDATABASE"),
-            port=int(os.getenv("MYSQLPORT") or 3306)
-        )
-        return conn
-    except Exception as e:
-        print("DB ERROR:", e)
-        return None
-
-# ---------------- CREATE TABLE ----------------
-def create_table():
-    conn = get_connection()
-    if conn is None:
-        return
-
-    cursor = conn.cursor()
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS jobs (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        user VARCHAR(50),
-        source VARCHAR(50),
-        company VARCHAR(100),
-        role VARCHAR(100),
-        applied_date VARCHAR(20),
-        status VARCHAR(50)
+    return mysql.connector.connect(
+        host=os.getenv("MYSQLHOST"),
+        user=os.getenv("MYSQLUSER"),
+        password=os.getenv("MYSQLPASSWORD"),
+        database=os.getenv("MYSQLDATABASE"),
+        port=int(os.getenv("MYSQLPORT"))
     )
-    """)
 
-    conn.commit()
-    conn.close()
-
-# ---------------- START ----------------
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 Bot is LIVE!\n\nSend job details like:\n\n"
-        "Source: SLA\nCompany: TCS\nRole: Data Analyst\nDate: 05-04-2026\nStatus: applied"
-    )
-# ---------------- PARSE MESSAGE ----------------
+# PARSE MESSAGE
 def parse_message(text):
     data = {}
     for line in text.split("\n"):
@@ -61,145 +22,52 @@ def parse_message(text):
             data[key.strip().lower()] = value.strip()
     return data
 
-
-
-# ---------------- ADD JOB ----------------
+# MAIN HANDLER
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         text = update.message.text
-        print("Received:", text)   # DEBUG LOG
-
         user = update.message.from_user.username or "unknown"
 
         data = parse_message(text)
 
-        # DEBUG PRINT
-        print("Parsed:", data)
+        source = data.get("source")
+        company = data.get("company")
+        role = data.get("role")
+        date = data.get("date")
+        status = data.get("status")
 
-        # VALIDATION
-        required_fields = ["source", "company", "role", "date", "status"]
-
-        for field in required_fields:
-            if field not in data:
-                await update.message.reply_text(f"Missing field: {field}")
-                return
-
-        status = data["status"].lower()
-
-        if status not in VALID_STATUS:
-            await update.message.reply_text("Invalid status!")
+        if not all([source, company, role, date, status]):
+            await update.message.reply_text("❌ Invalid format. Please follow correct format.")
             return
 
         conn = get_connection()
-        if conn is None:
-            await update.message.reply_text("Database connection failed!")
-            return
-
         cursor = conn.cursor()
 
-        cursor.execute("""
+        query = """
         INSERT INTO jobs (user, source, company, role, applied_date, status)
         VALUES (%s, %s, %s, %s, %s, %s)
-        """, (
-            user,
-            data["source"],
-            data["company"],
-            data["role"],
-            data["date"],
-            status
-        ))
+        """
 
+        cursor.execute(query, (user, source, company, role, date, status))
         conn.commit()
-        job_id = cursor.lastrowid
+
+        cursor.close()
         conn.close()
 
-        await update.message.reply_text(f"✅ Job saved (ID: {job_id})")
+        await update.message.reply_text("✅ Data saved successfully!")
 
     except Exception as e:
         print("ERROR:", e)
-        await update.message.reply_text("❌ Something went wrong!")
+        await update.message.reply_text("❌ Error occurred")
 
-# ---------------- VIEW ----------------
-async def view(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = get_connection()
-    if conn is None:
-        await update.message.reply_text("Database error")
-        return
+# START BOT
+def main():
+    app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
 
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, company, status FROM jobs")
-    rows = cursor.fetchall()
-    conn.close()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    if not rows:
-        await update.message.reply_text("No data found")
-        return
+    print("Bot started...")
+    app.run_polling()
 
-    msg = "JOB LIST\n\n"
-
-    for r in rows:
-        msg += f"{r[0]} | {r[1]} | {r[2]}\n"
-
-    await update.message.reply_text(msg)
-
-# ---------------- SUMMARY ----------------
-async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = get_connection()
-    if conn is None:
-        await update.message.reply_text("Database error")
-        return
-
-    cursor = conn.cursor()
-    cursor.execute("SELECT source, status FROM jobs")
-    rows = cursor.fetchall()
-    conn.close()
-
-    total = len(rows)
-    sla = sum(1 for r in rows if r[0].lower() == "sla")
-    off = sum(1 for r in rows if r[0].lower() == "off-campus")
-
-    selected = sum(1 for r in rows if r[1].lower() == "selected")
-    inprogress = sum(1 for r in rows if r[1].lower() == "in progress")
-    rejected = sum(1 for r in rows if r[1].lower() == "rejected")
-
-    msg = f"""
-JOB SUMMARY
-
-Total Applied: {total}
-
-SLA Applied: {sla}
-Off-Campus Applied: {off}
-
-Selected: {selected}
-In Progress: {inprogress}
-Rejected: {rejected}
-"""
-
-    await update.message.reply_text(msg)
-
-# ---------------- MAIN ----------------
 if __name__ == "__main__":
-    try:
-        print("Starting bot...")
-
-        create_table()
-
-        TOKEN = os.getenv("BOT_TOKEN")
-
-        if not TOKEN:
-            print("ERROR: BOT_TOKEN missing")
-            exit()
-
-        app = ApplicationBuilder().token(TOKEN).build()
-
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("view", view))
-        app.add_handler(CommandHandler("summary", summary))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-        print("Bot started successfully...")
-
-        app.run_polling(close_loop=False)
-
-    except Exception as e:
-        print("FATAL ERROR:", e)
+    main()
