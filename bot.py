@@ -45,9 +45,13 @@ def create_table():
     conn.close()
 
 # ---------------- START ----------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bot is running...")
 
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🤖 Bot is LIVE!\n\nSend job details like:\n\n"
+        "Source: SLA\nCompany: TCS\nRole: Data Analyst\nDate: 05-04-2026\nStatus: applied"
+    )
 # ---------------- PARSE MESSAGE ----------------
 def parse_message(text):
     data = {}
@@ -57,18 +61,29 @@ def parse_message(text):
             data[key.strip().lower()] = value.strip()
     return data
 
+
+
 # ---------------- ADD JOB ----------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    user = update.message.from_user.username or "unknown"
-
-    data = parse_message(text)
-
     try:
-        source = data["source"]
-        company = data["company"]
-        role = data["role"]
-        date = data["date"]
+        text = update.message.text
+        print("Received:", text)   # DEBUG LOG
+
+        user = update.message.from_user.username or "unknown"
+
+        data = parse_message(text)
+
+        # DEBUG PRINT
+        print("Parsed:", data)
+
+        # VALIDATION
+        required_fields = ["source", "company", "role", "date", "status"]
+
+        for field in required_fields:
+            if field not in data:
+                await update.message.reply_text(f"Missing field: {field}")
+                return
+
         status = data["status"].lower()
 
         if status not in VALID_STATUS:
@@ -85,18 +100,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor.execute("""
         INSERT INTO jobs (user, source, company, role, applied_date, status)
         VALUES (%s, %s, %s, %s, %s, %s)
-        """, (user, source, company, role, date, status))
+        """, (
+            user,
+            data["source"],
+            data["company"],
+            data["role"],
+            data["date"],
+            status
+        ))
 
         conn.commit()
         job_id = cursor.lastrowid
-
         conn.close()
 
-        await update.message.reply_text(f"Job saved (ID: {job_id})")
+        await update.message.reply_text(f"✅ Job saved (ID: {job_id})")
 
     except Exception as e:
-        print("MESSAGE ERROR:", e)
-        await update.message.reply_text("Invalid format!")
+        print("ERROR:", e)
+        await update.message.reply_text("❌ Something went wrong!")
 
 # ---------------- VIEW ----------------
 async def view(update: Update, context: ContextTypes.DEFAULT_TYPE):
