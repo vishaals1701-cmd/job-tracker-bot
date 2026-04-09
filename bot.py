@@ -11,13 +11,21 @@ import os
 
 # ================= DB CONNECTION =================
 def get_connection():
-    return mysql.connector.connect(
-        host=os.getenv("MYSQLHOST"),
-        user=os.getenv("MYSQLUSER"),
-        password=os.getenv("MYSQLPASSWORD"),
-        database=os.getenv("MYSQLDATABASE"),
-        port=int(os.getenv("MYSQLPORT"))
-    )
+    try:
+        conn = mysql.connector.connect(
+            host=os.getenv("MYSQLHOST"),
+            user=os.getenv("MYSQLUSER"),
+            password=os.getenv("MYSQLPASSWORD"),
+            database=os.getenv("MYSQLDATABASE"),
+            port=int(os.getenv("MYSQLPORT")),
+            connection_timeout=10
+        )
+        print("✅ DB Connected")
+        return conn
+    except Exception as e:
+        print("❌ DB CONNECTION ERROR:", e)
+        raise e
+
 
 # ================= PARSE MESSAGE =================
 def parse_message(text):
@@ -27,6 +35,7 @@ def parse_message(text):
             key, value = line.split(":", 1)
             data[key.strip().lower()] = value.strip()
     return data
+
 
 # ================= SAVE DATA =================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -44,9 +53,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Validation
         if not all([source, company, role, date, status]):
-            await update.message.reply_text(
-                "❌ Invalid format\n\nUse:\nSource:\nCompany:\nRole:\nDate:\nStatus:"
-            )
+            await update.message.reply_text("❌ Invalid format")
             return
 
         conn = get_connection()
@@ -63,22 +70,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor.close()
         conn.close()
 
+        print("✅ DATA INSERTED")
         await update.message.reply_text("✅ Data saved successfully!")
 
     except Exception as e:
-        print("ERROR:", e)
-        await update.message.reply_text("❌ Error occurred")
+        print("❌ INSERT ERROR:", e)
+        await update.message.reply_text(f"❌ Error: {e}")
 
-# ================= VIEW COMMAND =================
+
+# ================= VIEW =================
 async def view_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         conn = get_connection()
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT source, company, role, applied_date, status 
-            FROM jobs 
-            ORDER BY id DESC 
+            SELECT source, company, role, applied_date, status
+            FROM jobs
+            ORDER BY id DESC
             LIMIT 5
         """)
 
@@ -88,7 +97,7 @@ async def view_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("📭 No data found")
             return
 
-        msg = "📌 Last 5 Applications:\n"
+        msg = "📌 Last Applications:\n"
         for row in rows:
             msg += f"\n{row[0]} | {row[1]} | {row[2]} | {row[3]} | {row[4]}"
 
@@ -98,10 +107,11 @@ async def view_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
     except Exception as e:
-        print("VIEW ERROR:", e)
-        await update.message.reply_text("❌ Error fetching data")
+        print("❌ VIEW ERROR:", e)
+        await update.message.reply_text(f"❌ Error: {e}")
 
-# ================= SUMMARY COMMAND =================
+
+# ================= SUMMARY =================
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         conn = get_connection()
@@ -111,10 +121,10 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = cursor.fetchall()
 
         if not rows:
-            await update.message.reply_text("📭 No data available")
+            await update.message.reply_text("📭 No data")
             return
 
-        msg = "📊 Application Summary:\n"
+        msg = "📊 Summary:\n"
         for row in rows:
             msg += f"{row[0]}: {row[1]}\n"
 
@@ -124,20 +134,22 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
     except Exception as e:
-        print("SUMMARY ERROR:", e)
-        await update.message.reply_text("❌ Error fetching summary")
+        print("❌ SUMMARY ERROR:", e)
+        await update.message.reply_text(f"❌ Error: {e}")
 
-# ================= START BOT =================
+
+# ================= MAIN =================
 def main():
+    print("🚀 Starting bot...")
+
     app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
 
-    # Handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler("view", view_jobs))
     app.add_handler(CommandHandler("summary", summary))
 
-    print("🚀 Bot started...")
     app.run_polling()
+
 
 # ================= RUN =================
 if __name__ == "__main__":
