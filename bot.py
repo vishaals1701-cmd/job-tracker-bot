@@ -1,135 +1,157 @@
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import mysql.connector
 import os
 
+# ---------------- VALID STATUS ----------------
 VALID_STATUS = ["applied", "in progress", "rejected", "selected"]
 
-# -------- DB CONNECTION --------
+# ---------------- DB CONNECTION ----------------
 def get_connection():
     return mysql.connector.connect(
         host=os.getenv("MYSQLHOST"),
         user=os.getenv("MYSQLUSER"),
         password=os.getenv("MYSQLPASSWORD"),
         database=os.getenv("MYSQLDATABASE"),
-        port=os.getenv("MYSQLPORT")
+        port=int(os.getenv("MYSQLPORT"))
     )
 
-# -------- PARSE --------
+# ---------------- CREATE TABLE ----------------
+def create_table():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS jobs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user VARCHAR(50),
+        source VARCHAR(50),
+        company VARCHAR(100),
+        role VARCHAR(100),
+        applied_date VARCHAR(20),
+        status VARCHAR(50)
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+# ---------------- START ----------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Bot is running...")
+
+# ---------------- PARSE MESSAGE ----------------
 def parse_message(text):
     data = {}
     for line in text.split("\n"):
-        if "Source:" in line:
-            data["source"] = line.split(":")[1].strip()
-        elif "Company:" in line:
-            data["company"] = line.split(":")[1].strip()
-        elif "Role:" in line:
-            data["role"] = line.split(":")[1].strip()
-        elif "Date:" in line:
-            data["applied_date"] = line.split(":")[1].strip()
-        elif "Status:" in line:
-            data["status"] = line.split(":")[1].strip().lower()
+        if ":" in line:
+            key, value = line.split(":", 1)
+            data[key.strip().lower()] = value.strip()
     return data
 
-# -------- ADD --------
+# ---------------- ADD JOB ----------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user.username or "unknown"
-    data = parse_message(update.message.text)
+    text = update.message.text
+    user = update.message.from_user.username
 
+    data = parse_message(text)
+
+    try:
+        source = data["source"]
+        company = data["company"]
+        role = data["role"]
+        date = data["date"]
+        status = data["status"].lower()
+
+        if status not in VALID_STATUS:
+            await update.message.reply_text("Invalid status!")
+            return
+
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        INSERT INTO jobs (user, source, company, role, applied_date, status)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """, (user, source, company, role, date, status))
+
+        conn.commit()
+
+        job_id = cursor.lastrowid
+
+        conn.close()
+
+        await update.message.reply_text(f"Job saved (ID: {job_id})")
+
+    except Exception as e:
+        await update.message.reply_text("Invalid format!")
+
+# ---------------- VIEW ----------------
+async def view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_connection()
     cursor = conn.cursor()
 
-    query = """
-    INSERT INTO jobs (user, source, company, role, applied_date, status)
-    VALUES (%s, %s, %s, %s, %s, %s)
-    """
-
-    cursor.execute(query, (
-        user,
-        data.get("source"),
-        data.get("company"),
-        data.get("role"),
-        data.get("applied_date"),
-        data.get("status")
-    ))
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-    await update.message.reply_text("✅ Job saved")
-
-# -------- VIEW --------
-async def view_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT * FROM jobs")
+    cursor.execute("SELECT id, company, status FROM jobs")
     rows = cursor.fetchall()
 
-    msg = "📋 JOB LIST\n\n"
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text("No data found")
+        return
+
+    msg = "JOB LIST\n\n"
+
     for r in rows:
-        msg += f"{r[0]} | {r[3]} | {r[6]}\n"
-
-    cursor.close()
-    conn.close()
+        msg += f"{r[0]} | {r[1]} | {r[2]}\n"
 
     await update.message.reply_text(msg)
 
-# -------- UPDATE --------
-async def update_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    job_id = int(context.args[0])
-    status = " ".join(context.args[1:]).lower()
-
+# ---------------- SUMMARY ----------------
+async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("UPDATE jobs SET status=%s WHERE id=%s", (status, job_id))
-    conn.commit()
+    cursor.execute("SELECT source, status FROM jobs")
+    rows = cursor.fetchall()
 
-    cursor.close()
     conn.close()
 
-    await update.message.reply_text("🔄 Updated")
+    total = len(rows)
+    sla = sum(1 for r in rows if r[0].lower() == "sla")
+    off = sum(1 for r in rows if r[0].lower() == "off-campus")
 
-# -------- DELETE --------
-async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    job_id = int(context.args[0])
+    selected = sum(1 for r in rows if r[1].lower() == "selected")
+    inprogress = sum(1 for r in rows if r[1].lower() == "in progress")
+    rejected = sum(1 for r in rows if r[1].lower() == "rejected")
 
-    conn = get_connection()
-    cursor = conn.cursor()
+    msg = f"""
+JOB SUMMARY
 
-    cursor.execute("DELETE FROM jobs WHERE id=%s", (job_id,))
-    conn.commit()
+Total Applied: {total}
 
-    cursor.close()
-    conn.close()
+SLA Applied: {sla}
+Off-Campus Applied: {off}
 
-    await update.message.reply_text("🗑 Deleted")
-
-# -------- SUMMARY --------
-async def summary_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT COUNT(*) FROM jobs")
-    total = cursor.fetchone()[0]
-
-    msg = f"📊 JOB SUMMARY\n\nTotal Applied: {total}"
-
-    cursor.close()
-    conn.close()
+Selected: {selected}
+In Progress: {inprogress}
+Rejected: {rejected}
+"""
 
     await update.message.reply_text(msg)
 
-# -------- MAIN --------
-app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
+# ---------------- MAIN ----------------
+if __name__ == "__main__":
+    create_table()
 
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-app.add_handler(CommandHandler("view", view_cmd))
-app.add_handler(CommandHandler("update", update_cmd))
-app.add_handler(CommandHandler("delete", delete_cmd))
-app.add_handler(CommandHandler("summary", summary_cmd))
+    app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
 
-print("🚀 Bot running...")
-app.run_polling()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("view", view))
+    app.add_handler(CommandHandler("summary", summary))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    print("Bot started...")
+
+    app.run_polling(close_loop=False)
+
